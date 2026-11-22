@@ -16,7 +16,7 @@ export default function Explore() {
   const urlLang = searchParams.get('lang') || '';
 
   const [query, setQuery] = useState(urlQuery);
-  const debouncedQuery = useDebounce(query, 300);
+  const debouncedQuery = useDebounce(query, 250);
 
   const [filters, setFilters] = useState({
     genreId: urlGenre,
@@ -34,6 +34,9 @@ export default function Explore() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
 
+  // Request race-condition counter: guarantees older tasks cannot overwrite newer task outputs
+  const activeRequestId = useRef(0);
+
   // Load genres
   useEffect(() => {
     getGenres().then(list => setGenres(list || []));
@@ -45,9 +48,11 @@ export default function Explore() {
     const currentUrlGenre = searchParams.get('genre') || '';
     const currentUrlLang = searchParams.get('lang') || '';
 
-    if (currentUrlQ !== query) {
+    // Only update if URL differs from current debounced values to avoid circular trigger loops
+    if (currentUrlQ !== query && currentUrlQ !== debouncedQuery) {
       setQuery(currentUrlQ);
     }
+
     setFilters(prev => {
       if (prev.genreId !== currentUrlGenre || prev.language !== currentUrlLang) {
         return {
@@ -60,17 +65,32 @@ export default function Explore() {
     });
   }, [searchParams]);
 
-  // Update URL params when query or filters change
+  // Sync URL params when debounced search or filters change (avoids firing on every keystroke)
   useEffect(() => {
     const params = {};
-    if (query.trim()) params.q = query.trim();
+    if (debouncedQuery.trim()) params.q = debouncedQuery.trim();
     if (filters.genreId) params.genre = filters.genreId;
     if (filters.language) params.lang = filters.language;
-    setSearchParams(params, { replace: true });
-  }, [query, filters.genreId, filters.language, setSearchParams]);
 
-  // Main data fetch function
+    // Check if URL params already match to avoid redundant router pushes
+    const currentQ = searchParams.get('q') || '';
+    const currentGenre = searchParams.get('genre') || '';
+    const currentLang = searchParams.get('lang') || '';
+
+    if (
+      currentQ !== (params.q || '') ||
+      currentGenre !== (params.genre || '') ||
+      currentLang !== (params.lang || '')
+    ) {
+      setSearchParams(params, { replace: true });
+    }
+  }, [debouncedQuery, filters.genreId, filters.language, setSearchParams]);
+
+  // Main data fetch function with race condition prevention
   const fetchMoviesData = useCallback(async (isLoadMore = false, pageNum = 1, overrideQuery = null) => {
+    // Generate a unique incremental ID for this fetch task
+    const thisRequestId = ++activeRequestId.current;
+
     if (isLoadMore) {
       setLoadingMore(true);
     } else {
@@ -95,6 +115,12 @@ export default function Explore() {
         });
       }
 
+      // Check if a newer task was started while this task was running
+      if (thisRequestId !== activeRequestId.current) {
+        // Discard stale task output
+        return;
+      }
+
       if (data && data.results) {
         if (isLoadMore) {
           setMovies(prev => [...prev, ...data.results]);
@@ -107,21 +133,27 @@ export default function Explore() {
         if (!isLoadMore) setMovies([]);
       }
     } catch (err) {
+      // Ignore errors from superseded tasks
+      if (thisRequestId !== activeRequestId.current) return;
+
       console.error('Error fetching explore movies:', err);
       setError('Unable to load movies. Please check your network and try again.');
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      // Only release loading state if this is still the active task
+      if (thisRequestId === activeRequestId.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, [debouncedQuery, filters]);
 
-  // Refetch when query or filters change
+  // Refetch when debounced query or filters change
   useEffect(() => {
     setPage(1);
     fetchMoviesData(false, 1);
   }, [fetchMoviesData]);
 
-  // Handle immediate search (Enter key)
+  // Handle immediate search (Enter key submission)
   const handleImmediateSearch = (immediateQuery) => {
     setPage(1);
     fetchMoviesData(false, 1, immediateQuery);

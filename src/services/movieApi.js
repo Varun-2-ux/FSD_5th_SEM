@@ -71,14 +71,17 @@ async function fetchFromTmdb(endpoint, params = {}) {
   });
 
   try {
-    const response = await fetch(url.toString());
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const response = await fetch(url.toString(), { signal: controller.signal });
+    clearTimeout(timeoutId);
     if (!response.ok) {
       console.warn(`TMDB API request failed with status: ${response.status}`);
       return null;
     }
     return await response.json();
   } catch (err) {
-    console.warn('Network error while connecting to TMDB API:', err);
+    console.warn('Network error or timeout while connecting to TMDB API:', err.message);
     return null;
   }
 }
